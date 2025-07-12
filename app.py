@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-# Import all necessary functions from our new core logic file
+# Import all necessary functions from our core logic file
 from core_logic import (
     get_top_coins_data,
     get_api_data,
@@ -18,7 +18,7 @@ st.set_page_config(page_title="Crypto Analysis Dashboard", page_icon="📊", lay
 if 'app_start_time' not in st.session_state:
     st.session_state.app_start_time = datetime.now()
 if 'last_api_call' not in st.session_state:
-    st.session_state.last_api_call = "N/A" # Default value
+    st.session_state.last_api_call = "N/A" # Default value on first ever run
 
 # --- Helper function for uptime formatting ---
 def format_timedelta(td):
@@ -39,17 +39,12 @@ with st.expander("How the Scoring & Data Refresh Works"):
     """)
 
 try:
-    setup_database()  # Ensure the trade file exists
+    setup_database()
 
-    # We will wrap the main API call to update the timestamp
+    # When this line runs, it will call the function in core_logic.py
+    # That function will automatically update st.session_state.last_api_call if it runs for real.
     with st.spinner("Fetching latest market data..."):
-        # This function call is cached. The code inside only runs if cache is expired.
         top_coins = get_top_coins_data()
-        # We record the time right after the call. If it came from cache, the time won't update.
-        # A more robust way is to check the cache info, but this is simpler and effective.
-        # Let's refine this to be more accurate by checking the cached function's info.
-        if get_top_coins_data.get_stats().cache_misses > 0:
-             st.session_state.last_api_call = datetime.now()
 
     st.header("Top 25 Coins Overview")
 

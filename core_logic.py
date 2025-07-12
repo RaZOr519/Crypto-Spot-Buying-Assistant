@@ -19,7 +19,12 @@ def get_api_data(url, params):
 
 @st.cache_data(ttl=900)
 def get_top_coins_data():
-    """Specifically fetches the top 25 coins market data."""
+    """
+    Specifically fetches the top 25 coins market data.
+    CORRECTED LOGIC: It now updates the session state timestamp when it runs.
+    """
+    # This line will ONLY execute on a cache miss (i.e., when the API is actually called)
+    st.session_state.last_api_call = datetime.now()
     return get_api_data("https://api.coingecko.com/api/v3/coins/markets", {'vs_currency': 'usd', 'order': 'market_cap_desc', 'per_page': 25, 'page': 1})
 
 # --- Database / CSV Management ---
@@ -31,7 +36,6 @@ def setup_database():
     if not os.path.exists(TRADE_FILE):
         with open(TRADE_FILE, 'w', newline='') as f:
             writer = csv.writer(f)
-            # Add the new column for trade type
             writer.writerow(['timestamp', 'coin_id', 'name', 'symbol', 'buy_price', 'quantity', 'trade_type'])
 
 def log_trade(coin, analysis, trade_type):
@@ -39,7 +43,6 @@ def log_trade(coin, analysis, trade_type):
     Logs a new dummy trade. Now accepts a trade_type ('auto' or 'manual').
     Prevents duplicate 'auto' trades within 24 hours.
     """
-    # Auto-trades have a 24-hour cooldown period to prevent spamming
     if trade_type == 'auto':
         if os.path.exists(TRADE_FILE):
             try:
@@ -52,11 +55,10 @@ def log_trade(coin, analysis, trade_type):
                         (trades_df['timestamp'] > datetime.now() - timedelta(days=1))
                     ]
                     if not recent_trades.empty:
-                        return # Cooldown active, do not log trade
+                        return
             except pd.errors.EmptyDataError:
-                pass # File is empty, continue
+                pass
 
-    # Log the new trade with its type
     with open(TRADE_FILE, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -71,7 +73,7 @@ def log_trade(coin, analysis, trade_type):
     st.toast(f"Logged a ${TRADE_AMOUNT_USD} {trade_type} trade for {coin['name']}!", icon="✅")
 
 
-# --- Analysis Function (No changes needed here, but kept for completeness) ---
+# --- Analysis Function ---
 def calculate_indicators_and_score(coin_data, hist_df):
     hist_df.ta.rsi(close=hist_df['price'], append=True)
     hist_df.ta.macd(close=hist_df['price'], append=True)

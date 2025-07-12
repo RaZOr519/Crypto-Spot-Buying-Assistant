@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import os
+from datetime import datetime
 # Import all necessary functions from the core logic file
 from core_logic import (
     get_top_coins_data,
@@ -15,18 +16,17 @@ st.set_page_config(page_title="Paper Trading Portfolio", page_icon="💰", layou
 st.title("💰 Paper Trading Portfolio")
 st.markdown("This page tracks the performance of both automated and manually logged dummy trades.")
 
-# This function NO LONGER uses a cache decorator. It's a simple file reader.
 def load_portfolio_data():
     """Loads, cleans, and returns the portfolio DataFrame from the CSV file."""
     if not os.path.exists(TRADE_FILE) or pd.read_csv(TRADE_FILE).empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['timestamp', 'coin_id', 'name', 'symbol', 'buy_price', 'quantity', 'trade_type'])
 
     trades_df = pd.read_csv(TRADE_FILE)
     trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'], format="ISO8601", errors='coerce')
     trades_df.dropna(subset=['timestamp'], inplace=True)
     return trades_df
 
-# --- NEW: Initialize the portfolio in the session state on the first run ---
+# Initialize the portfolio in the session state on the first run
 if 'portfolio_df' not in st.session_state:
     st.session_state.portfolio_df = load_portfolio_data()
 
@@ -42,18 +42,35 @@ with st.expander("Log a Manual Trade", expanded=True):
         if st.button(f"Log ${TRADE_AMOUNT_USD:.2f} Manual Purchase"):
             selected_coin_data = next((c for c in top_coins if c['name'] == selected_coin_name), None)
             if selected_coin_data:
-                manual_analysis = {'current_price': selected_coin_data['current_price']}
-                log_trade(selected_coin_data, manual_analysis, trade_type='manual')
+                # 1. Log the trade to the CSV file for persistence
+                analysis_for_trade = {'current_price': selected_coin_data['current_price']}
+                log_trade(selected_coin_data, analysis_for_trade, trade_type='manual')
                 
-                # --- THE ROBUST FIX: Manually update the session state and then rerun ---
-                st.session_state.portfolio_df = load_portfolio_data()
+                # --- THE GUARANTEED FIX: Update the session state DataFrame directly in-memory ---
+                
+                # 2. Create a new DataFrame for the single new trade
+                new_trade_data = {
+                    'timestamp': pd.to_datetime(datetime.now().isoformat()),
+                    'coin_id': selected_coin_data['id'],
+                    'name': selected_coin_data['name'],
+                    'symbol': selected_coin_data['symbol'].upper(),
+                    'buy_price': analysis_for_trade['current_price'],
+                    'quantity': TRADE_AMOUNT_USD / analysis_for_trade['current_price'],
+                    'trade_type': 'manual'
+                }
+                new_trade_df = pd.DataFrame([new_trade_data])
+                
+                # 3. Concatenate the new trade DataFrame with the existing one in session state
+                st.session_state.portfolio_df = pd.concat([st.session_state.portfolio_df, new_trade_df], ignore_index=True)
+                
+                # 4. Rerun to instantly reflect the change from the updated session state
                 st.rerun()
 
     except Exception as e:
         st.error(f"Could not load coins for manual trading. Error: {e}")
 
 # --- Portfolio Display ---
-# The app now reads directly from session state, which is always up-to-date.
+# The app now reads directly from session state, which we manually keep updated.
 trades_df = st.session_state.portfolio_df
 
 if trades_df.empty:

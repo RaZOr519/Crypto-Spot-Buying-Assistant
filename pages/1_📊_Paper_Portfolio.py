@@ -7,14 +7,27 @@ from core_logic import (
     get_top_coins_data,
     get_api_data,
     log_trade,
-    calculate_indicators_and_score # We need this to get the current price for a manual trade
+    TRADE_FILE,
+    TRADE_AMOUNT_USD
 )
-
-TRADE_FILE = 'paper_trades.csv'
 
 st.set_page_config(page_title="Paper Trading Portfolio", page_icon="💰", layout="wide")
 st.title("💰 Paper Trading Portfolio")
 st.markdown("This page tracks the performance of both automated and manually logged dummy trades.")
+
+# --- NEW: A dedicated, cached function to load and process portfolio data ---
+# This helps keep our code clean and avoids re-reading the file unnecessarily.
+@st.cache_data(ttl=30) # A short cache to avoid re-reading the file on minor UI interactions
+def load_portfolio_data():
+    """Loads, cleans, and returns the portfolio DataFrame from the CSV file."""
+    if not os.path.exists(TRADE_FILE) or pd.read_csv(TRADE_FILE).empty:
+        return pd.DataFrame() # Return an empty DataFrame if no file or trades exist
+
+    trades_df = pd.read_csv(TRADE_FILE)
+    # Robust date conversion
+    trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'], errors='coerce')
+    trades_df.dropna(subset=['timestamp'], inplace=True)
+    return trades_df
 
 # --- Manual Trade Logger ---
 with st.expander("Log a Manual Trade"):
@@ -24,44 +37,41 @@ with st.expander("Log a Manual Trade"):
         
         selected_coin_name = st.selectbox("Select a coin to trade:", options=coin_names)
         
-        if st.button("Log $10 Manual Purchase"):
+        if st.button(f"Log ${TRADE_AMOUNT_USD:.2f} Manual Purchase"):
             selected_coin_data = next((c for c in top_coins if c['name'] == selected_coin_name), None)
             if selected_coin_data:
                 manual_analysis = {'current_price': selected_coin_data['current_price']}
                 log_trade(selected_coin_data, manual_analysis, trade_type='manual')
-                st.success(f"Successfully logged manual trade for {selected_coin_name}.")
-                # Clear cache to force a re-read of the trade file immediately
-                st.cache_data.clear()
+                
+                # --- KEY CHANGE: Force an immediate re-run of the script ---
+                # This makes the new trade appear instantly in the portfolio below.
+                st.rerun()
+
     except Exception as e:
         st.error(f"Could not load coins for manual trading. Error: {e}")
 
 # --- Portfolio Display ---
-if not os.path.exists(TRADE_FILE) or pd.read_csv(TRADE_FILE).empty:
+trades_df = load_portfolio_data()
+
+if trades_df.empty:
     st.info("No paper trades have been logged yet. A $10 trade is automatically placed when a coin's score exceeds 65 on the main dashboard, or you can add one manually above.")
 else:
-    trades_df = pd.read_csv(TRADE_FILE)
-    
-    # --- ROBUST DATE CONVERSION (THE FIX) ---
-    # 1. Use errors='coerce' to turn any bad dates into NaT (Not a Time) instead of crashing.
-    trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'], errors='coerce')
-    # 2. Drop any rows where the date conversion failed.
-    trades_df.dropna(subset=['timestamp'], inplace=True)
-    
     portfolio_coin_ids = trades_df['coin_id'].unique().tolist()
     
-    if not portfolio_coin_ids:
-        st.info("No valid trades found to display.")
-    else:
+    with st.spinner("Fetching latest prices to update portfolio..."):
         try:
             ids_string = ",".join(map(str, portfolio_coin_ids))
             current_prices = get_api_data("https://api.coingecko.com/api/v3/simple/price", {'vs_currency': 'usd', 'ids': ids_string})
 
+            # --- ENHANCED P/L CALCULATION ---
             trades_df['current_price'] = trades_df['coin_id'].apply(lambda x: current_prices.get(str(x), {}).get('usd', 0))
+            trades_df['initial_value'] = TRADE_AMOUNT_USD # Every trade is a fixed $10
             trades_df['current_value'] = trades_df['current_price'] * trades_df['quantity']
-            trades_df['pnl'] = trades_df['current_value'] - (trades_df['buy_price'] * trades_df['quantity'])
-            trades_df['pnl_percent'] = (trades_df['pnl'] / (trades_df['buy_price'] * trades_df['quantity'])) * 100
+            trades_df['pnl'] = trades_df['current_value'] - trades_df['initial_value']
+            trades_df['pnl_percent'] = (trades_df['pnl'] / trades_df['initial_value']) * 100
 
-            total_invested = (trades_df['buy_price'] * trades_df['quantity']).sum()
+            # --- Summary Metrics ---
+            total_invested = trades_df['initial_value'].sum()
             total_current_value = trades_df['current_value'].sum()
             total_pnl = trades_df['pnl'].sum()
             
@@ -70,22 +80,32 @@ else:
             col2.metric("Portfolio's Current Value", f"${total_current_value:,.2f}")
             col3.metric("Total Profit / Loss", f"${total_pnl:,.2f}", delta=f"{total_pnl / total_invested:.2%}" if total_invested > 0 else "0.00%")
 
+            # --- ENHANCED Display Table ---
             st.subheader("All Trades")
 
-            def style_pnl(val): return f'color: {"green" if val > 0 else "red" if val < 0 else "grey"}'
+            def style_pnl(val): return f'color: {"#2E8B57" if val > 0 else "#B22222" if val < 0 else "grey"}' # Green/Red
             def style_type(val):
-                color = "#3498db" if val == 'manual' else "#2ecc71"
+                color = "#3498db" if val == 'manual' else "#2ecc71" # Blue for manual, Green for auto
                 return f'background-color: {color}; color: white; border-radius: 5px; padding: 2px 6px; text-align: center;'
             
-            display_df = trades_df[['timestamp', 'name', 'trade_type', 'buy_price', 'current_price', 'current_value', 'pnl', 'pnl_percent']].copy()
+            # --- We now explicitly show Initial and Current Value for clarity ---
+            display_df = trades_df[[
+                'timestamp', 'name', 'trade_type', 'buy_price', 
+                'current_price', 'initial_value', 'current_value', 'pnl'
+            ]].copy()
+            display_df.rename(columns={'initial_value': 'Invested'}, inplace=True)
             display_df.sort_values('timestamp', ascending=False, inplace=True)
 
-            st.dataframe(display_df.style.format({
-                'buy_price': "${:,.4f}", 'current_price': "${:,.4f}", 'current_value': "${:,.2f}",
-                'pnl': "${:,.2f}", 'pnl_percent': "{:,.2f}%"
-            }).applymap(style_pnl, subset=['pnl', 'pnl_percent'])\
-              .applymap(style_type, subset=['trade_type']),
-            use_container_width=True, hide_index=True)
+            st.dataframe(
+                display_df.style.format({
+                    'buy_price': "${:,.4f}", 'current_price': "${:,.4f}",
+                    'Invested': "${:,.2f}", 'current_value': "${:,.2f}",
+                    'pnl': "${:,.2f}"
+                }).applymap(style_pnl, subset=['pnl'])\
+                  .applymap(style_type, subset=['trade_type']),
+                use_container_width=True, 
+                hide_index=True
+            )
             
         except Exception as e:
             st.error(f"Could not process portfolio data. Error: {e}")

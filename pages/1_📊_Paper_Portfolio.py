@@ -15,24 +15,23 @@ st.set_page_config(page_title="Paper Trading Portfolio", page_icon="💰", layou
 st.title("💰 Paper Trading Portfolio")
 st.markdown("This page tracks the performance of both automated and manually logged dummy trades.")
 
-@st.cache_data(ttl=30)
+# This function NO LONGER uses a cache decorator. It's a simple file reader.
 def load_portfolio_data():
     """Loads, cleans, and returns the portfolio DataFrame from the CSV file."""
     if not os.path.exists(TRADE_FILE) or pd.read_csv(TRADE_FILE).empty:
         return pd.DataFrame()
 
     trades_df = pd.read_csv(TRADE_FILE)
-    
-    trades_df['timestamp'] = pd.to_datetime(
-        trades_df['timestamp'],
-        format="ISO8601",  # Use the standard ISO format which is more robust
-        errors='coerce'
-    )
-    
+    trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'], format="ISO8601", errors='coerce')
     trades_df.dropna(subset=['timestamp'], inplace=True)
     return trades_df
 
-# Manual Trade Logger
+# --- NEW: Initialize the portfolio in the session state on the first run ---
+if 'portfolio_df' not in st.session_state:
+    st.session_state.portfolio_df = load_portfolio_data()
+
+
+# --- Manual Trade Logger ---
 with st.expander("Log a Manual Trade", expanded=True):
     try:
         top_coins = get_top_coins_data()
@@ -46,20 +45,20 @@ with st.expander("Log a Manual Trade", expanded=True):
                 manual_analysis = {'current_price': selected_coin_data['current_price']}
                 log_trade(selected_coin_data, manual_analysis, trade_type='manual')
                 
-                # --- THE FIX: Clear the specific cache and then rerun ---
-                load_portfolio_data.clear()
+                # --- THE ROBUST FIX: Manually update the session state and then rerun ---
+                st.session_state.portfolio_df = load_portfolio_data()
                 st.rerun()
 
     except Exception as e:
         st.error(f"Could not load coins for manual trading. Error: {e}")
 
-# Portfolio Display
-trades_df = load_portfolio_data()
+# --- Portfolio Display ---
+# The app now reads directly from session state, which is always up-to-date.
+trades_df = st.session_state.portfolio_df
 
 if trades_df.empty:
     st.info("No paper trades have been logged yet. A $10 trade is automatically placed when a coin's score exceeds 65 on the main dashboard, or you can add one manually above.")
 else:
-    # (The rest of the file is unchanged, but included for completeness)
     portfolio_coin_ids = trades_df['coin_id'].unique().tolist()
     
     with st.spinner("Fetching latest prices to update portfolio..."):
@@ -71,8 +70,6 @@ else:
             trades_df['initial_value'] = TRADE_AMOUNT_USD
             trades_df['current_value'] = trades_df['current_price'] * trades_df['quantity']
             trades_df['pnl'] = trades_df['current_value'] - trades_df['initial_value']
-            
-            # Avoid division by zero if initial value is somehow zero
             trades_df['pnl_percent'] = (trades_df['pnl'] / trades_df['initial_value']).replace([float('inf'), -float('inf')], 0) * 100
 
             total_invested = trades_df['initial_value'].sum()
